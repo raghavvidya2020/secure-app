@@ -18,70 +18,57 @@ env:
   SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
 jobs:
-
 # ─────────────────────────────────────────────
 # 🔍 TFLint
 # ─────────────────────────────────────────────
   tflint:
     runs-on: ubuntu-latest
-
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/checkout@v4
 
-      - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7
+      - uses: actions/cache@v4
         with:
           path: ~/.tflint.d/plugins
           key: ${{ runner.os }}-tflint-${{ hashFiles('.tflint.hcl') }}
 
-      - uses: terraform-linters/setup-tflint@b480b8fcdaa6f2c577f8e4fa799e89e756bb7c93
+      - uses: terraform-linters/setup-tflint@v4
 
       - run: tflint --init
 
       - name: Run TFLint
-        run: tflint --format sarif > tflint.sarif || true
+        # Removed || true so it fails on linting errors
+        run: tflint --format sarif > tflint.sarif
 
-      - name: Fix SARIF
-        run: |
-          if [ ! -s tflint.sarif ]; then
-            echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"tflint"}},"results":[]}]}' > tflint.sarif
-          fi
-
-      - uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc
-        if: success() || failure()
+      - name: Upload TFLint SARIF
+        # Use always() so the report uploads even if linting failed
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: tflint.sarif
           category: tflint
 
 # ─────────────────────────────────────────────
-# 🔐 Checkov (FIXED)
+# 🔐 Checkov
 # ─────────────────────────────────────────────
   checkov:
     runs-on: ubuntu-latest
-
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/checkout@v4
 
       - name: Run Checkov
-        uses: bridgecrewio/checkov-action@2fd3901c8feb52417f27f0d9800259a106c1ec1e
+        uses: bridgecrewio/checkov-action@master
         with:
           directory: .
           framework: terraform
           output_format: sarif
           output_file_path: .
+          # Checkov action fails the build by default if errors are found
 
-      - name: Normalize SARIF
-        run: |
-          FILE=$(ls *.sarif 2>/dev/null | head -n 1)
-          if [ -n "$FILE" ]; then
-            mv "$FILE" checkov.sarif
-          else
-            echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"checkov"}},"results":[]}]}' > checkov.sarif
-          fi
-
-      - uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc
-        if: success() || failure()
+      - name: Upload Checkov SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: checkov.sarif
+          sarif_file: results.sarif
           category: checkov
 
 # ─────────────────────────────────────────────
@@ -89,64 +76,55 @@ jobs:
 # ─────────────────────────────────────────────
   snyk:
     runs-on: ubuntu-latest
-
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: '18'
 
-      - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7
-        with:
-          path: ~/.npm
-          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
-
       - name: Install dependencies
-        run: npm ci || true
+        run: npm ci || npm install # Fallback if lockfile is missing
 
       - name: Install Snyk CLI
         run: npm install -g snyk
 
       - name: Authenticate Snyk
-        run: snyk auth $SNYK_TOKEN
+        run: snyk auth ${{ secrets.SNYK_TOKEN }}
 
       # ── Dependency Scan ──
       - name: Snyk Dependency Scan
-        run: snyk test --severity-threshold=high --sarif-file-output=snyk-deps.sarif || true
+        # Removed || true. Fails if high-severity vulns are found.
+        run: snyk test --severity-threshold=high --sarif-file-output=snyk-deps.sarif
 
       # ── Code Scan ──
       - name: Snyk Code Scan
-        run: snyk code test --severity-threshold=high --sarif-file-output=snyk-code.sarif || true
+        # Removed || true. This will catch your Command Injection and FAIL the job.
+        run: snyk code test --severity-threshold=high --sarif-file-output=snyk-code.sarif
 
       # ── IaC Scan ──
       - name: Snyk IaC Scan
-        run: snyk iac test --sarif-file-output=snyk-iac.sarif || true
+        run: snyk iac test --sarif-file-output=snyk-iac.sarif
 
-      # ── Fix SARIF Files ──
-      - name: Fix SARIF files
-        run: |
-          for file in snyk-deps.sarif snyk-code.sarif snyk-iac.sarif; do
-            if [ ! -s "$file" ]; then
-              echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"snyk"}},"results":[]}]}' > $file
-            fi
-          done
-
-      # ── Upload SARIF (FIXED CATEGORY ISSUE) ──
-      - uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc
-        if: success() || failure()
+      # ── Upload Results ──
+      # We use 'if: always()' so that even if Snyk Code fails, the reports are still sent to GitHub Security tab
+      - name: Upload Snyk Dependencies
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: snyk-deps.sarif
           category: snyk-dependencies
 
-      - uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc
-        if: success() || failure()
+      - name: Upload Snyk Code
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: snyk-code.sarif
           category: snyk-code
 
-      - uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc
-        if: success() || failure()
+      - name: Upload Snyk IaC
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: snyk-iac.sarif
           category: snyk-iac
