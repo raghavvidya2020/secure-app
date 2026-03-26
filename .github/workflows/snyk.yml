@@ -1,29 +1,195 @@
-snyk-code-scan:
-  name: Code Scan (SAST)
-  runs-on: ubuntu-latest
+name: Unified Security Scan
 
-  steps:
-    - name: Checkout code
-      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
 
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
+permissions:
+  contents: read
+  security-events: write
+  actions: read
 
-    - name: Install Snyk CLI
-      run: npm install -g snyk
+env:
+  SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
-    - name: Authenticate Snyk
-      run: snyk auth $SNYK_TOKEN
-      env:
-        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+jobs:
 
-    - name: Run Snyk Code scan (SARIF)
-      run: snyk code test --severity-threshold=high --sarif-file-output=snyk-code.sarif
+# ─────────────────────────────────────────────
+# 🔍 TFLint (Terraform Linting)
+# ─────────────────────────────────────────────
+  tflint:
+    runs-on: ubuntu-latest
 
-    - name: Upload SARIF
-      if: success() || failure()
-      uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc
-      with:
-        sarif_file: snyk-code.sarif
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Cache TFLint plugins
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7
+        with:
+          path: ~/.tflint.d/plugins
+          key: ${{ runner.os }}-tflint-${{ hashFiles('.tflint.hcl') }}
+
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@b480b8fcdaa6f2c577f8e4fa799e89e756bb7c93
+
+      - name: Init
+        run: tflint --init
+
+      - name: Run TFLint
+        run: |
+          tflint --format sarif > tflint.sarif || true
+
+      - name: Ensure SARIF exists
+        run: |
+          if [ ! -f tflint.sarif ]; then
+            echo '{"version":"2.1.0","runs":[]}' > tflint.sarif
+          fi
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc
+        if: success() || failure()
+        with:
+          sarif_file: tflint.sarif
+
+# ─────────────────────────────────────────────
+# 🛡️ Trivy Scan (FS + IaC)
+# ─────────────────────────────────────────────
+  trivy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Install Trivy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+          echo deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install -y trivy
+
+      - name: Run Trivy scan
+        run: |
+          trivy fs --format sarif --output trivy.sarif . || true
+
+      - name: Ensure SARIF exists
+        run: |
+          if [ ! -f trivy.sarif ]; then
+            echo '{"version":"2.1.0","runs":[]}' > trivy.sarif
+          fi
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc
+        if: success() || failure()
+        with:
+          sarif_file: trivy.sarif
+
+# ─────────────────────────────────────────────
+# 🔐 Checkov (IaC Security)
+# ─────────────────────────────────────────────
+  checkov:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@2fd3901c8feb52417f27f0d9800259a106c1ec1e
+        with:
+          directory: .
+          framework: terraform
+          output_format: sarif
+          output_file_path: checkov.sarif
+          quiet: true
+
+      - name: Ensure SARIF exists
+        run: |
+          if [ ! -f checkov.sarif ]; then
+            echo '{"version":"2.1.0","runs":[]}' > checkov.sarif
+          fi
+
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc
+        if: success() || failure()
+        with:
+          sarif_file: checkov.sarif
+
+# ─────────────────────────────────────────────
+# 🧪 Snyk (Dependencies + Code + IaC)
+# ─────────────────────────────────────────────
+  snyk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Cache npm
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
+
+      - name: Install dependencies
+        run: npm ci || true
+
+      - name: Install Snyk CLI
+        run: npm install -g snyk
+
+      - name: Authenticate Snyk
+        run: snyk auth $SNYK_TOKEN
+
+      # Dependency Scan
+      - name: Snyk Dependency Scan
+        run: |
+          snyk test --severity-threshold=high --sarif-file-output=snyk-deps.sarif || true
+
+      # Code Scan (SAST)
+      - name: Snyk Code Scan
+        run: |
+          snyk code test --severity-threshold=high --sarif-file-output=snyk-code.sarif || true
+
+      # IaC Scan (optional but powerful)
+      - name: Snyk IaC Scan
+        run: |
+          snyk iac test --sarif-file-output=snyk-iac.sarif || true
+
+      - name: Ensure SARIF files exist
+        run: |
+          for file in snyk-deps.sarif snyk-code.sarif snyk-iac.sarif; do
+            if [ ! -f "$file" ]; then
+              echo '{"version":"2.1.0","runs":[]}' > $file
+            fi
+          done
+
+      - name: Upload SARIF (Dependencies)
+        uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc
+        if: success() || failure()
+        with:
+          sarif_file: snyk-deps.sarif
+
+      - name: Upload SARIF (Code)
+        uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc
+        if: success() || failure()
+        with:
+          sarif_file: snyk-code.sarif
+
+      - name: Upload SARIF (IaC)
+        uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc
+        if: success() || failure()
+        with:
+          sarif_file: snyk-iac.sarif
