@@ -1,0 +1,12 @@
+# Snyk policy file
+version: v1.25.0
+
+# Ignore specific vulnerabilities (with justification)
+ignore:
+  SNYK-JS-LODASH-567746:
+    - '*':
+        reason: 'Not exploitable in our use case'
+        expires: '2025-12-31T00:00:00.000Z'
+
+# Patch rules
+patch: {}
