@@ -1,0 +1,33 @@
+name: Docker Build and Scan
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build-and-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 1. Build the Docker image locally
+      - name: Build Docker Image
+        run: docker build -t my-nginx-app:${{ github.sha }} .
+
+      # 2. Run Snyk to check Docker image for vulnerabilities
+      - name: Snyk Container Scan
+        uses: snyk/actions/docker@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          image: my-nginx-app:${{ github.sha }}
+          args: --severity-threshold=high --file=Dockerfile
+
+      # 3. Upload the SARIF file to GitHub Security tab
+      - name: Upload Snyk Scan Results
+        uses: github/codeql-action/upload-sarif@v4
+        if: always()
+        with:
+          sarif_file: snyk.sarif
