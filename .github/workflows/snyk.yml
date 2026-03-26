@@ -1,4 +1,4 @@
-name: Unified Security Scan (Snyk-Based)
+name: Unified Security Scan (Final)
 
 on:
   push:
@@ -37,7 +37,8 @@ jobs:
 
       - run: tflint --init
 
-      - run: tflint --format sarif > tflint.sarif || true
+      - name: Run TFLint
+        run: tflint --format sarif > tflint.sarif || true
 
       - name: Fix SARIF
         run: |
@@ -49,9 +50,10 @@ jobs:
         if: success() || failure()
         with:
           sarif_file: tflint.sarif
+          category: tflint
 
 # ─────────────────────────────────────────────
-# 🔐 Checkov
+# 🔐 Checkov (FIXED)
 # ─────────────────────────────────────────────
   checkov:
     runs-on: ubuntu-latest
@@ -80,9 +82,10 @@ jobs:
         if: success() || failure()
         with:
           sarif_file: checkov.sarif
+          category: checkov
 
 # ─────────────────────────────────────────────
-# 🧪 Snyk (All-in-One Replacement)
+# 🧪 Snyk (ALL-IN-ONE)
 # ─────────────────────────────────────────────
   snyk:
     runs-on: ubuntu-latest
@@ -99,12 +102,13 @@ jobs:
           path: ~/.npm
           key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
 
-      - run: npm ci || true
+      - name: Install dependencies
+        run: npm ci || true
 
       - name: Install Snyk CLI
         run: npm install -g snyk
 
-      - name: Authenticate
+      - name: Authenticate Snyk
         run: snyk auth $SNYK_TOKEN
 
       # ── Dependency Scan ──
@@ -119,7 +123,7 @@ jobs:
       - name: Snyk IaC Scan
         run: snyk iac test --sarif-file-output=snyk-iac.sarif || true
 
-      # ── Fix SARIF ──
+      # ── Fix SARIF Files ──
       - name: Fix SARIF files
         run: |
           for file in snyk-deps.sarif snyk-code.sarif snyk-iac.sarif; do
@@ -128,18 +132,21 @@ jobs:
             fi
           done
 
-      # ── Upload Results ──
+      # ── Upload SARIF (FIXED CATEGORY ISSUE) ──
       - uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc
         if: success() || failure()
         with:
           sarif_file: snyk-deps.sarif
+          category: snyk-dependencies
 
       - uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc
         if: success() || failure()
         with:
           sarif_file: snyk-code.sarif
+          category: snyk-code
 
       - uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc
         if: success() || failure()
         with:
           sarif_file: snyk-iac.sarif
+          category: snyk-iac
