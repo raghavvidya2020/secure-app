@@ -14,7 +14,7 @@ permissions:
 
 jobs:
 # ─────────────────────────────────────────────
-# 🛡️ Secret Scanning (Gitleaks Filesystem Scan)
+# 🛡️ Secret Scanning (Custom Gitleaks)
 # ─────────────────────────────────────────────
   secret-scan:
     runs-on: ubuntu-latest
@@ -24,12 +24,22 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Create Custom Gitleaks Config
+        # This forces Gitleaks to catch any ghp_ token even if it's short or simple
+        run: |
+          cat <<EOF > .gitleaks.toml
+          [[rules]]
+          id = "forced-github-pat"
+          description = "Forced detection of GitHub PAT"
+          regex = '''ghp_[a-zA-Z0-9]{5,40}'''
+          keywords = ["ghp_"]
+          EOF
+
       - name: Run Gitleaks (Full Repo Scan)
-        # We use the Docker version to bypass the Action's "smart" commit filtering
-        # This forces it to look at the actual files on the disk (like secure.txt)
         run: |
           docker run -v ${{ github.workspace }}:/path zricethezav/gitleaks:latest \
           detect --source="/path" \
+          --config="/path/.gitleaks.toml" \
           --report-format=sarif \
           --report-path="/path/results.sarif" \
           --exit-code=0 \
@@ -97,7 +107,6 @@ jobs:
         run: |
           npm install -g snyk
           snyk auth ${{ secrets.SNYK_TOKEN }}
-          # Create lockfile if missing for Snyk
           npm ci || npm install --package-lock-only || true
           snyk test --severity-threshold=high --sarif-file-output=snyk-deps.sarif || true
           snyk code test --severity-threshold=high --sarif-file-output=snyk-code.sarif || true
