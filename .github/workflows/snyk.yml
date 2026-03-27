@@ -14,7 +14,7 @@ permissions:
 
 jobs:
 # ─────────────────────────────────────────────
-# 🛡️ Secret Scanning (Gitleaks)
+# 🛡️ Secret Scanning (Gitleaks Filesystem Scan)
 # ─────────────────────────────────────────────
   secret-scan:
     runs-on: ubuntu-latest
@@ -22,16 +22,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # CRITICAL: Gitleaks needs full history to detect leaks
+          fetch-depth: 0
 
-      - name: Run Gitleaks
-        id: gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        with:
-           args: detect --source=. --verbose --report-format=sarif --report-path=results.sarif
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: true # Ensure we still upload the report even if leaks are found
+      - name: Run Gitleaks (Full Repo Scan)
+        # We use the Docker version to bypass the Action's "smart" commit filtering
+        # This forces it to look at the actual files on the disk (like secure.txt)
+        run: |
+          docker run -v ${{ github.workspace }}:/path zricethezav/gitleaks:latest \
+          detect --source="/path" \
+          --report-format=sarif \
+          --report-path="/path/results.sarif" \
+          --exit-code=0 \
+          --no-git \
+          --verbose
 
       - name: Upload Gitleaks SARIF
         if: always()
@@ -90,13 +93,12 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install dependencies
-        run: npm ci || npm install --package-lock-only || true
-
-      - name: Run Snyk scans
+      - name: Install Snyk and Scan
         run: |
           npm install -g snyk
           snyk auth ${{ secrets.SNYK_TOKEN }}
+          # Create lockfile if missing for Snyk
+          npm ci || npm install --package-lock-only || true
           snyk test --severity-threshold=high --sarif-file-output=snyk-deps.sarif || true
           snyk code test --severity-threshold=high --sarif-file-output=snyk-code.sarif || true
 
