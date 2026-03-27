@@ -1,1 +1,1 @@
-GH_TOKEN=ghp_n0tAreAlT0k3nByTh3W4yJustF0rTest1ng
+GH_TOKEN=ghp_n0tAreAlT0k3nByTh3W4yJutF0rTest1ng
