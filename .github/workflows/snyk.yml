@@ -27,6 +27,8 @@ jobs:
       - name: Run Gitleaks
         id: gitleaks
         uses: gitleaks/gitleaks-action@v2
+        with:
+           args: detect --source=. --verbose --report-format=sarif --report-path=results.sarif
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         continue-on-error: true # Ensure we still upload the report even if leaks are found
