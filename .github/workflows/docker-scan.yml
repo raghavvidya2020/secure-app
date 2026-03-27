@@ -1,37 +1,54 @@
-name: Docker Build and Scan
+name: Build, Scan, and Push Nginx Docker Image
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
 
-permissions:
-  contents: read
-  security-events: write
-  
 jobs:
   build-and-scan:
     runs-on: ubuntu-latest
+
+    env:
+      IMAGE_NAME: my-nginx
+      IMAGE_TAG: latest
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-      # 1. Build the Docker image locally
-      - name: Build Docker Image
-        run: docker build -t my-nginx-app:${{ github.sha }} .
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      # 2. Run Snyk to check Docker image for vulnerabilities
-      - name: Snyk Container Scan
-        uses: snyk/actions/docker@master
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      - name: Build Nginx Docker image
+        run: |
+          docker build -t $IMAGE_NAME:$IMAGE_TAG .
+
+      - name: Install Snyk CLI
+        run: |
+          npm install -g snyk
+
+      - name: Authenticate Snyk
+        run: |
+          snyk auth $SNYK_TOKEN
+
+      - name: Scan Docker image with Snyk
+        run: |
+          snyk container test $IMAGE_NAME:$IMAGE_TAG
+          
+      - name: Log in to Docker Hub
+        if: success()  # Only run if previous steps succeed
+        uses: docker/login-action@v3
         with:
-          image: my-nginx-app:${{ github.sha }}
-          args: --severity-threshold=high --file=Dockerfile --sarif-file-output=snyk.sarif
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_PASSWORD }}
 
-      # 3. Upload the SARIF file to GitHub Security tab
-      - name: Upload Snyk Scan Results
-        uses: github/codeql-action/upload-sarif@v4
-        if: always()
-        with:
-          sarif_file: snyk.sarif
+      - name: Push Docker image to Docker Hub
+        if: success()  # Only push if Snyk scan passed
+        run: |
+          docker tag $IMAGE_NAME:$IMAGE_TAG $DOCKERHUB_USERNAME/$IMAGE_NAME:$IMAGE_TAG
+          docker push $DOCKERHUB_USERNAME/$IMAGE_NAME:$IMAGE_TAG
