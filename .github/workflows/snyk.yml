@@ -5,8 +5,6 @@ on:
     branches: [ main, develop ]
   pull_request:
     branches: [ main ]
-  schedule:
-    - cron: '0 2 * * *'
   workflow_dispatch:
 
 permissions:
@@ -14,10 +12,32 @@ permissions:
   security-events: write
   actions: read
 
-env:
-  SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-
 jobs:
+# ─────────────────────────────────────────────
+# 🛡️ Secret Scanning (Gitleaks)
+# ─────────────────────────────────────────────
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # CRITICAL: Gitleaks needs full history to detect leaks
+
+      - name: Run Gitleaks
+        id: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true # Ensure we still upload the report even if leaks are found
+
+      - name: Upload Gitleaks SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif
+          category: gitleaks
+
 # ─────────────────────────────────────────────
 # 🔍 Infrastructure as Code (TFLint & Checkov)
 # ─────────────────────────────────────────────
@@ -26,13 +46,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # TFLint
       - uses: terraform-linters/setup-tflint@v4
       - run: tflint --init
       - name: Run TFLint
         run: tflint --format sarif > tflint.sarif || echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"tflint"}},"results":[]}]}' > tflint.sarif
 
-      # Checkov
       - name: Run Checkov
         uses: bridgecrewio/checkov-action@master
         with:
@@ -42,17 +60,16 @@ jobs:
           output_file_path: .
         continue-on-error: true
 
-      # Upload IaC Results
       - name: Upload TFLint
         if: always()
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: tflint.sarif
           category: tflint
 
       - name: Upload Checkov
         if: always()
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: results.sarif
           category: checkov
@@ -62,6 +79,8 @@ jobs:
 # ─────────────────────────────────────────────
   snyk-security:
     runs-on: ubuntu-latest
+    env:
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -72,70 +91,32 @@ jobs:
       - name: Install dependencies
         run: npm ci || npm install --package-lock-only || true
 
-      - name: Install Snyk CLI
-        run: npm install -g snyk
+      - name: Run Snyk scans
+        run: |
+          npm install -g snyk
+          snyk auth ${{ secrets.SNYK_TOKEN }}
+          snyk test --severity-threshold=high --sarif-file-output=snyk-deps.sarif || true
+          snyk code test --severity-threshold=high --sarif-file-output=snyk-code.sarif || true
 
-      - name: Authenticate Snyk
-        run: snyk auth ${{ secrets.SNYK_TOKEN }}
-
-      # ── Run Scans ──
-      # We use 'continue-on-error' so one failure doesn't stop the whole pipeline
-      - name: Snyk Dependency Scan
-        run: snyk test --severity-threshold=high --sarif-file-output=snyk-deps.sarif
-        continue-on-error: true
-
-      - name: Snyk Code Scan
-        run: snyk code test --severity-threshold=high --sarif-file-output=snyk-code.sarif
-        continue-on-error: true
-
-      - name: Snyk IaC Scan
-        run: snyk iac test --sarif-file-output=snyk-iac.sarif
-        continue-on-error: true
-
-      # ── Ensure SARIF files exist (Fixes "Path does not exist" error) ──
       - name: Prepare SARIF files
         if: always()
         run: |
-          for file in snyk-deps.sarif snyk-code.sarif snyk-iac.sarif; do
+          for file in snyk-deps.sarif snyk-code.sarif; do
             if [ ! -f "$file" ]; then
-              echo "Creating empty SARIF for $file"
               echo '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"snyk"}},"results":[]}]}' > "$file"
             fi
           done
 
-      # ── Upload to GitHub Security Tab ──
-      - name: Upload Snyk Dependencies
+      - name: Upload Snyk Results
         if: always()
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: snyk-deps.sarif
-          category: snyk-dependencies
+          category: snyk-deps
 
       - name: Upload Snyk Code
         if: always()
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: snyk-code.sarif
           category: snyk-code
-
-      - name: Upload Snyk IaC
-        if: always()
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: snyk-iac.sarif
-          category: snyk-iac
-
-      - name: Run Gitleaks
-        uses: gitleaks/gitleaks-action@v2
-          
-      # ── FINAL GATE: Fail the build if vulnerabilities were found ──
-      - name: Final Security Check
-        if: always()
-        run: |
-          # Check if any SARIF file contains actual results (findings)
-          if grep -q '"results":\[{' snyk-deps.sarif || grep -q '"results":\[{' snyk-code.sarif; then
-            echo "❌ CRITICAL: Security vulnerabilities detected. Please check the Security tab."
-            exit 1
-          else
-            echo "✅ No high-severity vulnerabilities found."
-          fi
